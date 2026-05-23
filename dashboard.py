@@ -9,12 +9,17 @@ No external dependencies beyond stdlib.
 
 import csv
 import sys
+from collections import defaultdict
+from datetime import date
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-CSV_PATH          = Path(__file__).parent / 'at_risk_accounts.csv'
-AGENT_OUTPUT_PATH = Path(__file__).parent / 'agent_output.txt'
-SUBS_PATH         = Path(__file__).parent / 'ravenstack_subscriptions.csv'
+CSV_PATH            = Path(__file__).parent / 'at_risk_accounts.csv'
+AGENT_OUTPUT_PATH   = Path(__file__).parent / 'agent_output.txt'
+SUBS_PATH           = Path(__file__).parent / 'ravenstack_subscriptions.csv'
+ACCOUNTS_PATH       = Path(__file__).parent / 'ravenstack_accounts.csv'
+CHURN_EVENTS_PATH   = Path(__file__).parent / 'ravenstack_churn_events.csv'
+REF_DATE            = date(2024, 12, 31)
 PORT = 8080
 
 
@@ -79,6 +84,74 @@ def explain(row: dict) -> str:
             reasons.append('early-tenure account showing below-average product engagement')
 
     return 'Flagged because ' + ' and '.join(reasons[:2]) + '.'
+
+
+# ── Cohort retention ─────────────────────────────────────────────────────────
+
+def compute_cohort_retention() -> list[dict]:
+    """
+    Returns one row per signup-month cohort:
+      { label: 'Jan 2024', n: 22, ret: {1: 0.91, 3: 0.77, 6: None, 9: None} }
+    ret[m] is the fraction still active at month m, or None if not yet reached.
+    Accounts with churn_flag=True but no churn_events record are excluded
+    (churn date unknown — would distort survival estimates).
+    """
+    MILESTONES = [1, 3, 6, 9]
+
+    accounts = []
+    with open(ACCOUNTS_PATH, newline='') as f:
+        accounts = list(csv.DictReader(f))
+
+    # Earliest churn date per account from churn_events
+    earliest_churn: dict[str, date] = {}
+    with open(CHURN_EVENTS_PATH, newline='') as f:
+        for r in csv.DictReader(f):
+            d = date.fromisoformat(r['churn_date'])
+            aid = r['account_id']
+            if aid not in earliest_churn or d < earliest_churn[aid]:
+                earliest_churn[aid] = d
+
+    cohorts: dict[tuple, list] = defaultdict(list)
+    for a in accounts:
+        signup = date.fromisoformat(a['signup_date'])
+        churned = a['churn_flag'] == 'True'
+        if churned:
+            churn_dt = earliest_churn.get(a['account_id'])
+            if churn_dt is None:
+                continue  # unknown churn date — exclude
+        else:
+            churn_dt = None
+        cohorts[(signup.year, signup.month)].append(
+            {'signup': signup, 'churn_date': churn_dt}
+        )
+
+    rows = []
+    for (year, month) in sorted(cohorts.keys()):
+        members = cohorts[(year, month)]
+        n = len(members)
+        if n < 3:
+            continue
+        cohort_start    = date(year, month, 1)
+        cohort_age_days = (REF_DATE - cohort_start).days
+        label = cohort_start.strftime('%b %Y')
+
+        ret = {}
+        for m in MILESTONES:
+            milestone_days = 30.44 * m
+            if cohort_age_days < milestone_days:
+                ret[m] = None  # cohort hasn't reached this milestone yet
+                continue
+            survived = sum(
+                1 for mb in members
+                if mb['churn_date'] is None
+                or (mb['churn_date'] - mb['signup']).days > milestone_days
+            )
+            ret[m] = round(survived / n, 4)
+
+        if ret.get(1) is not None:   # only show cohorts old enough for month-1
+            rows.append({'label': label, 'n': n, 'ret': ret})
+
+    return rows
 
 
 # ── Shared: modal HTML + JS (dark, embedded in both pages) ───────────────────
@@ -189,7 +262,7 @@ _MODAL_HTML = """
 
 # ── Layer 1: CEO Brief (light theme, JSON-driven) ─────────────────────────────
 
-def render_brief(brief: dict) -> str:
+def render_brief(brief: dict, cohort_rows: list) -> str:
     status = brief['status']
     status_styles = {
         'alert':   ('background:#fff0ee;color:#cf222e;border:1px solid #ffc1bb', '● ALERT'),
@@ -231,6 +304,20 @@ def render_brief(brief: dict) -> str:
 
     questions_html = ''.join(
         f'<li>{q}</li>' for q in brief['questions']
+    )
+
+    def ret_cell(v):
+        if v is None:
+            return '<td><span class="ret-na">&mdash;</span></td>'
+        pct = f'{v:.0%}'
+        cls = 'ret-green' if v >= 0.70 else ('ret-amber' if v >= 0.50 else 'ret-red')
+        return f'<td><span class="{cls}">{pct}</span></td>'
+
+    cohort_table_rows = ''.join(
+        f'<tr><td>{r["label"]}</td><td class="c-n">{r["n"]}</td>'
+        + ''.join(ret_cell(r['ret'].get(m)) for m in [1, 3, 6, 9])
+        + '</tr>'
+        for r in cohort_rows
     )
 
     return f"""<!DOCTYPE html>
@@ -333,6 +420,39 @@ def render_brief(brief: dict) -> str:
     }}
     .view-full-btn:hover {{ background: #32383f; }}
     .footer-note {{ font-size: 12px; color: #656d76; }}
+
+    .cohort-section {{ margin-bottom: 28px; }}
+    .cohort-heading {{
+      font-size: 13px; font-weight: 600; color: #1f2328;
+      margin-bottom: 12px;
+    }}
+    .cohort-wrap {{
+      background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
+      overflow-x: auto; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }}
+    .cohort-wrap table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    .cohort-wrap thead th {{
+      background: #f6f8fa; color: #656d76; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .06em;
+      padding: 10px 16px; text-align: center; border-bottom: 1px solid #d0d7de;
+    }}
+    .cohort-wrap thead th:first-child {{ text-align: left; }}
+    .cohort-wrap tbody tr {{ border-bottom: 1px solid #eaeef2; }}
+    .cohort-wrap tbody tr:last-child {{ border-bottom: none; }}
+    .cohort-wrap tbody tr:hover {{ background: #f6f8fa; }}
+    .cohort-wrap td {{
+      padding: 9px 16px; text-align: center;
+      font-size: 13px; font-variant-numeric: tabular-nums;
+    }}
+    .cohort-wrap td:first-child {{ text-align: left; font-weight: 600; color: #1f2328; }}
+    .cohort-wrap td.c-n {{ color: #656d76; font-size: 12px; }}
+    .ret-green {{ color: #1a7f37; background: #e6f4ea; border-radius: 4px;
+                  font-weight: 600; display: inline-block; padding: 2px 8px; }}
+    .ret-amber {{ color: #7d4e00; background: #fff8e1; border-radius: 4px;
+                  font-weight: 600; display: inline-block; padding: 2px 8px; }}
+    .ret-red   {{ color: #cf222e; background: #fff0ee; border-radius: 4px;
+                  font-weight: 600; display: inline-block; padding: 2px 8px; }}
+    .ret-na    {{ color: #bbb; font-size: 12px; }}
   </style>
 </head>
 <body>
@@ -356,6 +476,27 @@ def render_brief(brief: dict) -> str:
   </div>
 
   <div class="flags">{flags_html}
+  </div>
+
+  <div class="cohort-section">
+    <div class="cohort-heading">Retention by signup cohort — where customers drop off</div>
+    <div class="cohort-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Cohort</th>
+            <th>N</th>
+            <th>Month 1</th>
+            <th>Month 3</th>
+            <th>Month 6</th>
+            <th>Month 9</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cohort_table_rows}
+        </tbody>
+      </table>
+    </div>
   </div>
 
   <div class="questions-block">
@@ -623,7 +764,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             if self.path in ('/', '/index.html'):
-                _serve_html(self, render_brief(BRIEF))
+                cohort_rows = compute_cohort_retention()
+                _serve_html(self, render_brief(BRIEF, cohort_rows))
 
             elif self.path == '/details':
                 accounts = load_accounts()
