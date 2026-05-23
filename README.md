@@ -1,3 +1,5 @@
+*Built to demonstrate the analyst layer above an AI agent system — translating automated data signals into decisions leadership can act on.*
+
 # Early Churn Monitor
 
 A SaaS customer health dashboard that identifies accounts at risk of churning
