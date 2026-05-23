@@ -142,3 +142,101 @@ print(out['risk_tier'].value_counts().sort_index().to_string())
 print('\nTop 15 accounts:')
 print(out.head(15)[['account_name', 'plan_tier', 'tenure_months', 'weekly_trend',
                       'error_rate', 'escalated_tickets', 'risk_score', 'risk_tier']].to_string(index=False))
+
+# ── MRR at risk ───────────────────────────────────────────────────────────────
+# Sum active subscription MRR (end_date null, churn_flag false) per account
+active_subs = subs[(subs['end_date'].isna()) & (subs['churn_flag'] == False)]
+mrr_by_acct = active_subs.groupby('account_id')['mrr_amount'].sum()
+out['mrr'] = out['account_id'].map(mrr_by_acct).fillna(0)
+
+flagged = out[out['risk_tier'].isin(['High', 'Medium'])].copy()
+total_mrr_at_risk = flagged['mrr'].sum()
+
+
+def explain(row) -> str:
+    reasons = []
+    if row['weekly_trend'] == 'declining':
+        reasons.append('weekly engagement is trending downward')
+    elif row['weekly_trend'] == 'insufficient data':
+        reasons.append('product engagement is too low to establish a usage pattern')
+    er = row['error_rate']
+    if er >= 0.40:
+        reasons.append(f'{er:.0%} of feature interactions are failing with errors')
+    elif er >= 0.28:
+        reasons.append(f'elevated feature error rate ({er:.0%}) suggesting product friction')
+    esc = int(row['escalated_tickets'])
+    if esc >= 2:
+        reasons.append(f'{esc} escalated support tickets indicating unresolved issues')
+    elif esc == 1:
+        reasons.append('1 escalated support ticket on record')
+    if not reasons:
+        if row['risk_score'] > 0.55:
+            reasons.append('multiple moderate signals across engagement, errors, and support')
+        else:
+            reasons.append('early-tenure account showing below-average product engagement')
+    return 'Flagged because ' + ' and '.join(reasons[:2]) + '.'
+
+
+# ── agent_output.txt ──────────────────────────────────────────────────────────
+tier_counts = out['risk_tier'].value_counts()
+high_n   = int(tier_counts.get('High',   0))
+medium_n = int(tier_counts.get('Medium', 0))
+low_n    = int(tier_counts.get('Low',    0))
+
+lines = [
+    f'EARLY CHURN MONITOR — AGENT OUTPUT',
+    f'Generated: {REF_DATE.date()}  |  Cohort: active accounts < {TENURE_WINDOW} months tenure',
+    f'',
+    f'SUMMARY',
+    f'  Total accounts monitored : {len(out)}',
+    f'  High risk  (score > 0.6) : {high_n}',
+    f'  Medium risk (score 0.4-0.6) : {medium_n}',
+    f'  Low risk   (score < 0.4) : {low_n}',
+    f'  Total MRR at risk (high + medium) : ${total_mrr_at_risk:,.0f}/mo',
+    f'',
+    f'SCORING METHOD',
+    f'  risk_score = 0.40 * weekly_trend + 0.35 * error_rate + 0.25 * escalation_score',
+    f'  Weekly trend: linear regression over within-tenure usage events',
+    f'                declining = rel. slope < -5%/week',
+    f'  Error rate:   share of usage events with error_count > 0',
+    f'  Escalations:  min(escalated_tickets / 2, 1)',
+    f'',
+]
+
+if high_n > 0:
+    lines.append('HIGH RISK ACCOUNTS')
+    for _, row in out[out['risk_tier'] == 'High'].iterrows():
+        lines += [
+            f'',
+            f'  {row["account_name"]}',
+            f'    Plan           : {row["plan_tier"]}',
+            f'    Tenure         : {row["tenure_months"]} months',
+            f'    Weekly trend   : {row["weekly_trend"]}',
+            f'    Error rate     : {row["error_rate"]:.0%}',
+            f'    Escalations    : {int(row["escalated_tickets"])}',
+            f'    Risk score     : {row["risk_score"]}',
+            f'    MRR            : ${row["mrr"]:,.0f}/mo',
+            f'    Signal         : {explain(row)}',
+        ]
+    lines.append('')
+
+if medium_n > 0:
+    lines.append('MEDIUM RISK ACCOUNTS')
+    for _, row in out[out['risk_tier'] == 'Medium'].iterrows():
+        lines += [
+            f'',
+            f'  {row["account_name"]}',
+            f'    Plan           : {row["plan_tier"]}',
+            f'    Tenure         : {row["tenure_months"]} months',
+            f'    Weekly trend   : {row["weekly_trend"]}',
+            f'    Error rate     : {row["error_rate"]:.0%}',
+            f'    Escalations    : {int(row["escalated_tickets"])}',
+            f'    Risk score     : {row["risk_score"]}',
+            f'    MRR            : ${row["mrr"]:,.0f}/mo',
+            f'    Signal         : {explain(row)}',
+        ]
+    lines.append('')
+
+output_path = BASE / 'agent_output.txt'
+output_path.write_text('\n'.join(lines), encoding='utf-8')
+print(f'\nWrote agent_output.txt  ({len(flagged)} flagged accounts, ${total_mrr_at_risk:,.0f}/mo MRR at risk)')
