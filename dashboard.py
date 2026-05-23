@@ -24,18 +24,26 @@ def load_accounts():
     with open(CSV_PATH, newline='') as f:
         return list(csv.DictReader(f))
 
-def load_mrr_by_account():
-    """Sum active subscription MRR (no end_date, not churned) per account."""
-    mrr = {}
-    try:
-        with open(SUBS_PATH, newline='') as f:
-            for r in csv.DictReader(f):
-                if not r['end_date'].strip() and r['churn_flag'] == 'False':
-                    aid = r['account_id']
-                    mrr[aid] = mrr.get(aid, 0.0) + float(r['mrr_amount'] or 0)
-    except FileNotFoundError:
-        pass
-    return mrr
+BRIEF = {
+    "status": "alert",
+    "metrics": [
+        {"label": "MRR at Risk",          "value": "$622,674", "delta": "33 of 126 accounts flagged",       "direction": "down"},
+        {"label": "High Risk",            "value": "2",        "delta": "$13,326/mo combined MRR",          "direction": "down"},
+        {"label": "Accounts Monitored",   "value": "126",      "delta": "Active · under 6 months tenure", "direction": "neutral"},
+        {"label": "High Risk Rate",       "value": "2%",       "delta": "of new accounts flagged critical", "direction": "down"},
+    ],
+    "signal": "A systemic product error problem is driving churn risk across early-tenure accounts. 33 of 126 new accounts are flagged representing $622,674/mo MRR at risk. The critical window is months 1–9 — without proactive CS outreach this cohort will produce compounding cancellations within 4–8 weeks.",
+    "flags": [
+        {"severity": "red",   "text": "Company_100 and Company_139 are high risk — declining usage, 40–50% error rates, escalated tickets. Combined $13,326/mo MRR. Needs CS outreach this week."},
+        {"severity": "amber", "text": "31 medium risk accounts with declining engagement in the danger window. Top 5 represent $100k+ MRR. Monitor closely."},
+        {"severity": "green", "text": "93 low risk accounts are stable with growing or flat usage trends."},
+    ],
+    "questions": [
+        "Six accounts show 100% error rates under 1.5 months tenure — is this a product bug or onboarding gap, and who owns the investigation?",
+        "Company_139 is a Basic plan at 3.8 months with $12,422/mo MRR — is that MRR figure correct, and has any CS touchpoint happened?",
+        "With average tenure at churn of 9 months, what is the current intervention playbook for accounts flagged in months 1–5?",
+    ],
+}
 
 
 # ── Explanation engine ────────────────────────────────────────────────────────
@@ -179,52 +187,51 @@ _MODAL_HTML = """
 </script>"""
 
 
-# ── Layer 1: CEO Summary (light theme) ───────────────────────────────────────
+# ── Layer 1: CEO Brief (light theme, JSON-driven) ─────────────────────────────
 
-def render_ceo(accounts: list[dict], mrr_by_acct: dict) -> str:
-    total    = len(accounts)
-    high_accounts   = [a for a in accounts if a.get('risk_tier') == 'High']
-    medium_accounts = [a for a in accounts if a.get('risk_tier') == 'Medium']
-    high_n   = len(high_accounts)
-    medium_n = len(medium_accounts)
-    high_pct = f'{high_n / total:.0%}' if total else '0%'
+def render_brief(brief: dict) -> str:
+    status = brief['status']
+    status_styles = {
+        'alert':   ('background:#fff0ee;color:#cf222e;border:1px solid #ffc1bb', '● ALERT'),
+        'warning': ('background:#fff8e1;color:#7d4e00;border:1px solid #f5c842', '● WARNING'),
+        'ok':      ('background:#e6f4ea;color:#1a7f37;border:1px solid #a8d5b5', '● OK'),
+    }
+    badge_style, badge_label = status_styles.get(status, status_styles['alert'])
 
-    mrr_at_risk = sum(mrr_by_acct.get(a['account_id'], 0)
-                      for a in high_accounts + medium_accounts)
-
-    # Table: all high-risk + top 5 medium
-    table_accounts = high_accounts + medium_accounts[:5]
-
-    def ceo_row(acct):
-        tier = acct.get('risk_tier', 'Low')
-        mrr  = mrr_by_acct.get(acct['account_id'], 0)
-        note = explain(acct)
-        tier_style = {
-            'High':   'color:#cf222e;background:#fff0ee;border:1px solid #ffc1bb',
-            'Medium': 'color:#7d4e00;background:#fff8e1;border:1px solid #f5c842',
-            'Low':    'color:#1a7f37;background:#e6f4ea;border:1px solid #a8d5b5',
-        }.get(tier, '')
-        plan_style = {
-            'Enterprise': 'color:#5a32a3;background:#f6f0ff;border:1px solid #c4b5fd',
-            'Pro':        'color:#0f766e;background:#f0fdfa;border:1px solid #5eead4',
-            'Basic':      'color:#1e40af;background:#eff6ff;border:1px solid #93c5fd',
-        }.get(acct['plan_tier'], '')
+    dir_html = {
+        'down':    '<span style="color:#cf222e;font-size:11px;">&#9660; </span>',
+        'up':      '<span style="color:#1a7f37;font-size:11px;">&#9650; </span>',
+        'neutral': '',
+    }
+    def metric_card(m):
+        arrow = dir_html.get(m['direction'], '')
         return f"""
-      <tr>
-        <td>
-          <div class="c-name">{acct['account_name']}</div>
-          <div class="c-meta">{acct['industry']} &middot; {acct['country']}</div>
-        </td>
-        <td><span class="c-badge" style="{plan_style}">{acct['plan_tier']}</span></td>
-        <td class="c-num">{acct['tenure_months']} mo</td>
-        <td><span class="c-tier" style="{tier_style}">{tier}</span></td>
-        <td class="c-num c-mrr">${mrr:,.0f}<span class="c-mo">/mo</span></td>
-        <td class="c-why">{note}</td>
-      </tr>"""
+    <div class="card">
+      <div class="card-label">{m['label']}</div>
+      <div class="card-value">{m['value']}</div>
+      <div class="card-sub">{arrow}{m['delta']}</div>
+    </div>"""
 
-    table_rows = ''.join(ceo_row(a) for a in table_accounts)
-    shown_medium = min(5, medium_n)
-    more_medium  = medium_n - shown_medium
+    cards_html = ''.join(metric_card(m) for m in brief['metrics'])
+
+    flag_styles = {
+        'red':   ('border-left:3px solid #cf222e;background:#fff8f7', '#cf222e', '&#9632;'),
+        'amber': ('border-left:3px solid #d4a017;background:#fffcf0', '#7d4e00', '&#9632;'),
+        'green': ('border-left:3px solid #2da44e;background:#f3fbf6', '#1a7f37', '&#9632;'),
+    }
+    def flag_item(f):
+        style, color, icon = flag_styles.get(f['severity'], flag_styles['amber'])
+        return f"""
+    <div class="flag" style="{style}">
+      <span class="flag-icon" style="color:{color}">{icon}</span>
+      <span class="flag-text">{f['text']}</span>
+    </div>"""
+
+    flags_html = ''.join(flag_item(f) for f in brief['flags'])
+
+    questions_html = ''.join(
+        f'<li>{q}</li>' for q in brief['questions']
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -238,88 +245,85 @@ def render_ceo(accounts: list[dict], mrr_by_acct: dict) -> str:
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #f6f8fa; color: #1f2328; min-height: 100vh;
     }}
+
     .topbar {{
       background: #fff; border-bottom: 1px solid #d0d7de;
-      padding: 14px 32px; display: flex; align-items: center; gap: 12px;
+      padding: 14px 32px; display: flex; align-items: center; gap: 14px;
     }}
-    .logo {{ font-size: 17px; font-weight: 700; color: #1f2328; letter-spacing: -.2px; }}
-    .topbar-sub {{ font-size: 13px; color: #656d76; }}
-    .topbar-right {{ margin-left: auto; display: flex; align-items: center; gap: 10px; }}
+    .logo {{ font-size: 17px; font-weight: 700; color: #1f2328; letter-spacing: -.2px; flex-shrink: 0; }}
+    .status-badge {{
+      display: inline-block; padding: 3px 10px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; letter-spacing: .04em;
+    }}
+    .topbar-right {{ margin-left: auto; }}
     .view-analyst {{
-      padding: 6px 14px; background: #f6f8fa; border: 1px solid #d0d7de;
-      border-radius: 6px; color: #1f2328; font-size: 13px; font-weight: 500;
-      text-decoration: none; transition: background 120ms;
+      padding: 7px 16px; background: #f6f8fa; border: 1px solid #d0d7de;
+      border-radius: 6px; color: #1f2328; font-size: 13px; font-weight: 600;
+      text-decoration: none; transition: background 120ms; white-space: nowrap;
     }}
     .view-analyst:hover {{ background: #eaeef2; }}
-    .main {{ max-width: 1100px; margin: 0 auto; padding: 32px 32px 56px; }}
+
+    .main {{ max-width: 960px; margin: 0 auto; padding: 36px 32px 64px; }}
+
     .cards {{
       display: grid; grid-template-columns: repeat(4, 1fr);
-      gap: 16px; margin-bottom: 28px;
+      gap: 16px; margin-bottom: 32px;
     }}
     .card {{
       background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
-      padding: 22px 24px; box-shadow: 0 1px 3px rgba(0,0,0,.04);
+      padding: 22px 22px 18px; box-shadow: 0 1px 2px rgba(0,0,0,.04);
     }}
-    .card-label {{ font-size: 11px; color: #656d76; text-transform: uppercase;
-                   letter-spacing: .07em; margin-bottom: 10px; font-weight: 600; }}
-    .card-value {{ font-size: 36px; font-weight: 700; color: #1f2328;
-                   font-variant-numeric: tabular-nums; line-height: 1; }}
-    .card-value.red   {{ color: #cf222e; }}
-    .card-value.amber {{ color: #7d4e00; }}
-    .card-sub {{ font-size: 12px; color: #656d76; margin-top: 6px; }}
-    .insight-banner {{
-      display: flex; align-items: flex-start; gap: 12px;
+    .card-label {{
+      font-size: 11px; color: #656d76; text-transform: uppercase;
+      letter-spacing: .07em; margin-bottom: 10px; font-weight: 600;
+    }}
+    .card-value {{
+      font-size: 34px; font-weight: 700; color: #1f2328;
+      font-variant-numeric: tabular-nums; line-height: 1;
+    }}
+    .card-sub {{ font-size: 12px; color: #656d76; margin-top: 8px; line-height: 1.4; }}
+
+    .signal-block {{
       background: #fff; border: 1px solid #d0d7de;
-      border-left: 3px solid #6e40c9;
-      border-radius: 8px; padding: 14px 18px; margin-bottom: 24px;
-      font-size: 13px; color: #1f2328; line-height: 1.6;
-      box-shadow: 0 1px 3px rgba(0,0,0,.04);
+      border-left: 3px solid #1f2328;
+      border-radius: 8px; padding: 20px 24px;
+      margin-bottom: 20px; box-shadow: 0 1px 2px rgba(0,0,0,.04);
     }}
-    .insight-icon {{ color: #6e40c9; font-size: 16px; flex-shrink: 0; margin-top: 1px; }}
-    .insight-banner strong {{ color: #6e40c9; }}
-    .section-head {{
-      font-size: 14px; font-weight: 600; color: #1f2328;
-      margin-bottom: 4px;
+    .signal-label {{
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .1em; color: #656d76; margin-bottom: 10px;
     }}
-    .section-sub {{
-      font-size: 12px; color: #656d76; margin-bottom: 14px;
+    .signal-text {{
+      font-size: 15px; line-height: 1.7; color: #1f2328; font-weight: 400;
     }}
-    .table-wrap {{
+
+    .flags {{ display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }}
+    .flag {{
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 14px 18px; border-radius: 8px;
+      border: 1px solid #e5e7eb;
+    }}
+    .flag-icon {{ font-size: 10px; flex-shrink: 0; margin-top: 3px; }}
+    .flag-text {{ font-size: 13px; color: #1f2328; line-height: 1.6; }}
+
+    .questions-block {{
       background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
-      overflow-x: auto; box-shadow: 0 1px 3px rgba(0,0,0,.04);
-      margin-bottom: 20px;
+      padding: 22px 24px; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+      margin-bottom: 28px;
     }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    thead th {{
-      background: #f6f8fa; color: #656d76; font-size: 11px;
-      text-transform: uppercase; letter-spacing: .06em; font-weight: 600;
-      padding: 11px 16px; text-align: left;
-      border-bottom: 1px solid #d0d7de; white-space: nowrap;
+    .questions-label {{
+      font-size: 12px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .07em; color: #656d76; margin-bottom: 16px;
     }}
-    tbody tr {{ border-bottom: 1px solid #eaeef2; transition: background 80ms; }}
-    tbody tr:hover {{ background: #f6f8fa; }}
-    tbody tr:last-child {{ border-bottom: none; }}
-    td {{ padding: 12px 16px; vertical-align: middle; }}
-    .c-name {{ font-weight: 600; color: #1f2328; }}
-    .c-meta {{ font-size: 11px; color: #656d76; margin-top: 2px; }}
-    .c-num {{ font-variant-numeric: tabular-nums; color: #656d76; }}
-    .c-mrr {{ font-weight: 600; color: #1f2328; }}
-    .c-mo  {{ font-size: 11px; color: #656d76; font-weight: 400; }}
-    .c-badge {{
-      display: inline-block; padding: 2px 9px; border-radius: 5px;
-      font-size: 11px; font-weight: 600;
+    .questions-block ol {{
+      padding-left: 20px; display: flex; flex-direction: column; gap: 14px;
     }}
-    .c-tier {{
-      display: inline-block; padding: 2px 10px; border-radius: 999px;
-      font-size: 11px; font-weight: 700;
+    .questions-block li {{
+      font-size: 14px; color: #1f2328; line-height: 1.6; padding-left: 4px;
     }}
-    .c-why {{ font-size: 12px; color: #656d76; max-width: 340px; line-height: 1.5; }}
-    .more-row td {{
-      text-align: center; color: #656d76; font-size: 12px;
-      padding: 10px; background: #f6f8fa; border-radius: 0 0 10px 10px;
-    }}
-    .footer-actions {{
-      display: flex; align-items: center; gap: 12px; margin-top: 8px;
+
+    .footer-bar {{
+      display: flex; align-items: center; gap: 14px;
     }}
     .view-full-btn {{
       display: inline-block; padding: 9px 20px;
@@ -327,79 +331,42 @@ def render_ceo(accounts: list[dict], mrr_by_acct: dict) -> str:
       color: #fff; font-size: 13px; font-weight: 600; text-decoration: none;
       transition: background 120ms;
     }}
-    .view-full-btn:hover {{ background: #32383f; border-color: #32383f; }}
+    .view-full-btn:hover {{ background: #32383f; }}
     .footer-note {{ font-size: 12px; color: #656d76; }}
-{_MODAL_CSS}
   </style>
 </head>
 <body>
 
 <div class="topbar">
   <div class="logo">Early Churn Monitor</div>
-  <div class="topbar-sub">CEO Summary &nbsp;&middot;&nbsp; Active accounts &lt; 6 months</div>
+  <span class="status-badge" style="{badge_style}">{badge_label}</span>
   <div class="topbar-right">
-    <button class="export-btn" onclick="openBriefModal()">&#128196; Export for Brief</button>
     <a class="view-analyst" href="/details">View Full Analysis &rarr;</a>
   </div>
 </div>
 
-{_MODAL_HTML}
-
 <div class="main">
 
-  <div class="cards">
-    <div class="card">
-      <div class="card-label">Accounts Monitored</div>
-      <div class="card-value">{total}</div>
-      <div class="card-sub">Active &middot; under 6 months tenure</div>
-    </div>
-    <div class="card">
-      <div class="card-label">High Risk</div>
-      <div class="card-value red">{high_n}</div>
-      <div class="card-sub">Need immediate CS outreach</div>
-    </div>
-    <div class="card">
-      <div class="card-label">MRR at Risk</div>
-      <div class="card-value amber">${mrr_at_risk:,.0f}</div>
-      <div class="card-sub">High + medium risk accounts</div>
-    </div>
-    <div class="card">
-      <div class="card-label">High Risk Rate</div>
-      <div class="card-value {'red' if high_n / max(total,1) > 0.1 else 'amber'}">{high_pct}</div>
-      <div class="card-sub">of new accounts flagged critical</div>
-    </div>
+  <div class="cards">{cards_html}
   </div>
 
-  <div class="insight-banner">
-    <span class="insight-icon">&#9432;</span>
-    <span><strong>Key finding:</strong> tenure is the strongest churn predictor (effect size 4&times; larger than any behavioral signal). The critical window is months&nbsp;1&ndash;9. This monitor flags every new account showing early warning signs.</span>
+  <div class="signal-block">
+    <div class="signal-label">Situation</div>
+    <div class="signal-text">{brief['signal']}</div>
   </div>
 
-  <div class="section-head">Accounts Requiring Attention</div>
-  <div class="section-sub">All {high_n} high-risk + top 5 medium-risk accounts &middot; ranked by composite risk score</div>
-
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Account</th>
-          <th>Plan</th>
-          <th>Tenure</th>
-          <th>Risk</th>
-          <th>MRR</th>
-          <th>Why Flagged</th>
-        </tr>
-      </thead>
-      <tbody>
-        {table_rows}
-        {'<tr class="more-row"><td colspan="6">+ ' + str(more_medium) + ' more medium-risk accounts &mdash; <a href="/details">view all in analyst dashboard</a></td></tr>' if more_medium > 0 else ''}
-      </tbody>
-    </table>
+  <div class="flags">{flags_html}
   </div>
 
-  <div class="footer-actions">
+  <div class="questions-block">
+    <div class="questions-label">Questions for Leadership</div>
+    <ol>{questions_html}
+    </ol>
+  </div>
+
+  <div class="footer-bar">
     <a class="view-full-btn" href="/details">View Full Analysis &rarr;</a>
-    <span class="footer-note">All {total} monitored accounts &middot; scoring: engagement trend 40% &middot; error rate 35% &middot; escalations 25%</span>
+    <span class="footer-note">Signals: engagement trend 40% &middot; error rate 35% &middot; escalations 25% &middot; reference date 2024-12-31</span>
   </div>
 
 </div>
@@ -656,9 +623,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             if self.path in ('/', '/index.html'):
-                accounts    = load_accounts()
-                mrr_by_acct = load_mrr_by_account()
-                _serve_html(self, render_ceo(accounts, mrr_by_acct))
+                _serve_html(self, render_brief(BRIEF))
 
             elif self.path == '/details':
                 accounts = load_accounts()
