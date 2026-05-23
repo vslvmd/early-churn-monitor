@@ -421,6 +421,38 @@ def render_brief(brief: dict, cohort_rows: list) -> str:
     .view-full-btn:hover {{ background: #32383f; }}
     .footer-note {{ font-size: 12px; color: #656d76; }}
 
+    .signals-found {{ margin-bottom: 28px; }}
+    .signals-heading {{
+      font-size: 13px; font-weight: 600; color: #1f2328; margin-bottom: 12px;
+    }}
+    .signals-wrap {{
+      background: #fff; border: 1px solid #d0d7de; border-radius: 10px;
+      overflow-x: auto; box-shadow: 0 1px 2px rgba(0,0,0,.04);
+    }}
+    .signals-wrap table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+    .signals-wrap thead th {{
+      background: #f6f8fa; color: #656d76; font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: .06em;
+      padding: 10px 16px; text-align: right; border-bottom: 1px solid #d0d7de;
+    }}
+    .signals-wrap thead th:first-child {{ text-align: left; }}
+    .signals-wrap tbody tr {{ border-bottom: 1px solid #eaeef2; }}
+    .signals-wrap tbody tr:last-child {{ border-bottom: none; }}
+    .signals-wrap tbody tr:hover {{ background: #f6f8fa; }}
+    .signals-wrap tr.sig-highlight {{
+      background: #fffbeb; border-left: 3px solid #d4a017;
+    }}
+    .signals-wrap tr.sig-highlight:hover {{ background: #fff8d6; }}
+    .signals-wrap tr.sig-highlight td {{ font-weight: 700; color: #1f2328; }}
+    .signals-wrap td {{
+      padding: 10px 16px; text-align: right; font-size: 13px;
+      font-variant-numeric: tabular-nums; color: #1f2328;
+    }}
+    .signals-wrap td:first-child {{ text-align: left; }}
+    .signals-caption {{
+      font-size: 12px; color: #656d76; margin-top: 10px; font-style: italic;
+    }}
+
     .cohort-section {{ margin-bottom: 28px; }}
     .cohort-heading {{
       font-size: 13px; font-weight: 600; color: #1f2328;
@@ -476,6 +508,44 @@ def render_brief(brief: dict, cohort_rows: list) -> str:
   </div>
 
   <div class="flags">{flags_html}
+  </div>
+
+  <div class="signals-found">
+    <div class="signals-heading">What the data found</div>
+    <div class="signals-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Signal</th>
+            <th>Churned avg</th>
+            <th>Retained avg</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="sig-highlight">
+            <td>Tenure</td>
+            <td>9.0 months</td>
+            <td>15.3 months</td>
+          </tr>
+          <tr>
+            <td>Error rate</td>
+            <td>29.8%</td>
+            <td>31.0%</td>
+          </tr>
+          <tr>
+            <td>Support tickets</td>
+            <td>3.93</td>
+            <td>4.02</td>
+          </tr>
+          <tr>
+            <td>Escalation rate</td>
+            <td>6.1%</td>
+            <td>4.3%</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="signals-caption">Tenure is the only signal with meaningful separation between churned and retained accounts.</div>
   </div>
 
   <div class="cohort-section">
