@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-BASE = Path('/Users/vasaamadea/sophiie_brief')
+BASE = Path(__file__).parent
 REF_DATE = pd.Timestamp('2024-12-31')
 TENURE_WINDOW = 6  # months
 

@@ -9,7 +9,7 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-CSV_PATH = Path('/Users/vasaamadea/sophiie_brief/at_risk_accounts.csv')
+CSV_PATH = Path(__file__).parent / 'at_risk_accounts.csv'
 PORT = 8080
 
 
